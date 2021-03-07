@@ -42,7 +42,6 @@ func LoadSettings(version string) bool {
 		panic(err)
 	} else {
 		load(file, fileStorage)
-		saveSettings(fileName, fileStorage) //this is done to save additions from the current format
 	}
 
 	return false
