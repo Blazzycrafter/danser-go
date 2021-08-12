@@ -57,9 +57,7 @@ type Renderer struct {
 
 	vertexSize int
 	vertices   []float32
-	//indexes       []float32
 	vao *buffer.VertexArrayObject
-	//ibo           *buffer.IndexBufferObject
 	currentSize   int
 	currentFloats int
 	drawing       bool
@@ -86,8 +84,6 @@ func NewRendererSize(maxTriangles int) *Renderer {
 	vao.Attach(rShader)
 	vao.Unbind()
 
-	//ibo := buffer.NewIndexBufferObject(maxTriangles*6)
-
 	vertexSize := vao.GetVBOFormat("default").Size() / 4
 
 	chunk := vao.MapVBO("default", maxTriangles*3*vertexSize)
@@ -100,7 +96,6 @@ func NewRendererSize(maxTriangles int) *Renderer {
 		vertices:    chunk.Data,
 		chunkOffset: chunk.Offset,
 		vao:         vao,
-		//ibo:         ibo,
 		maxSprites: maxTriangles,
 	}
 }
@@ -116,7 +111,6 @@ func (renderer *Renderer) Begin() {
 	renderer.shader.SetUniform("proj", renderer.Projection)
 
 	renderer.vao.Bind()
-	//renderer.ibo.Bind()
 
 	blend.Push()
 	blend.Enable()
@@ -128,12 +122,9 @@ func (renderer *Renderer) Flush() {
 		return
 	}
 
-	//renderer.vao.SetData("sprites", 0, renderer.data[:renderer.currentFloats])
 	renderer.vao.UnmapVBO("default", 0, renderer.currentFloats)
 
 	renderer.vao.DrawPart(0, renderer.currentSize)
-
-	//renderer.ibo.DrawInstanced(renderer.chunkOffset/renderer.vertexSize, renderer.currentSize)
 
 	statistic.Add(statistic.SpritesDrawn, int64(renderer.currentSize))
 
@@ -155,7 +146,6 @@ func (renderer *Renderer) End() {
 
 	renderer.Flush()
 
-	//renderer.ibo.Unbind()
 	renderer.vao.Unbind()
 
 	renderer.shader.Unbind()
@@ -205,7 +195,7 @@ func (renderer *Renderer) DrawLine(x1, y1, x2, y2, thickness float32) {
 
 	length := math32.Sqrt(dx*dx + dy*dy)
 
-	tx := dy / length * thickHalf
+	tx := -dy / length * thickHalf
 	ty := dx / length * thickHalf
 
 	renderer.DrawQuad(x1-tx, y1-ty, x1+tx, y1+ty, x2+tx, y2+ty, x2-tx, y2-ty)

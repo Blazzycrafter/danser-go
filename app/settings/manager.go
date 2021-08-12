@@ -2,11 +2,17 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/fsnotify/fsnotify"
+	"log"
 	"os"
+	"path/filepath"
+	"time"
 )
 
 var fileStorage *fileformat
 var fileName string
+var watcher *fsnotify.Watcher
 
 func initStorage() {
 	fileStorage = &fileformat{
@@ -21,20 +27,23 @@ func initStorage() {
 		Playfield: Playfield,
 		Dance:     Dance,
 		Knockout:  Knockout,
+		Recording: Recording,
 	}
 }
 
 func LoadSettings(version string) bool {
 	initStorage()
-	fileName = "settings"
 
+	fileName = "settings"
 	if version != "" {
 		fileName += "-" + version
 	}
 	fileName += ".json"
 
 	file, err := os.Open(fileName)
+
 	defer file.Close()
+
 	if os.IsNotExist(err) {
 		saveSettings(fileName, fileStorage)
 		return true
@@ -44,13 +53,73 @@ func LoadSettings(version string) bool {
 		load(file, fileStorage)
 	}
 
+	if !RECORD {
+		setupWatcher(fileName)
+	}
+
 	return false
+}
+
+func setupWatcher(file string) {
+	var err error
+
+	watcher, err = fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	go func() {
+		for {
+			select {
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
+				}
+
+				if event.Op&fsnotify.Write == fsnotify.Write {
+					log.Println("SettingsManager: Detected", file, "modification, reloading...")
+
+					time.Sleep(time.Millisecond * 200)
+
+					sFile, _ := os.Open(fileName)
+
+					load(sFile, fileStorage)
+
+					sFile.Close()
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+
+				log.Println("error:", err)
+			}
+		}
+	}()
+
+	abs, _ := filepath.Abs(file)
+
+	err = watcher.Add(abs)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func CloseWatcher() {
+	if watcher != nil {
+		err := watcher.Close()
+		if err != nil {
+			log.Println(err)
+		}
+
+		watcher = nil
+	}
 }
 
 func load(file *os.File, target interface{}) {
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(target); err != nil {
-		panic(err)
+		panic(fmt.Sprintf("Failed to parse %s! Please re-check the file for mistakes. Error: %s", file.Name(), err))
 	}
 }
 
@@ -74,4 +143,8 @@ func saveSettings(path string, source interface{}) {
 	if err := file.Close(); err != nil {
 		panic(err)
 	}
+}
+
+func GetFormat() *fileformat {
+	return fileStorage
 }

@@ -2,9 +2,11 @@ package bass
 
 /*
 #cgo CFLAGS: -I/usr/include -I.
-#cgo LDFLAGS: -Wl,-rpath,$ORIGIN -L${SRCDIR} -L${SRCDIR}/../../ -L/usr/lib -lbass -lbass_fx
+#cgo LDFLAGS: -Wl,-rpath,$ORIGIN -L${SRCDIR} -L${SRCDIR}/../../ -L/usr/lib -lbass -lbass_fx -lbassmix -lbassenc
 #include "bass.h"
 #include "bass_fx.h"
+#include "bassmix.h"
+#include "bassenc.h"
 */
 import "C"
 
@@ -15,7 +17,9 @@ import (
 	"runtime"
 )
 
-func Init() {
+func Init(offscreen bool) {
+	log.Println("Initializing BASS...")
+
 	playbackBufferLength := 500
 	deviceBufferLength := 10
 	updatePeriod := 5
@@ -45,12 +49,27 @@ func Init() {
 	// BASS_CONFIG_MP3_OLDGAPS
 	C.BASS_SetConfig(C.DWORD(68), C.DWORD(1))
 
-	if C.BASS_Init(C.int(-1), C.DWORD(44100), C.DWORD(0), nil, nil) != 0 {
+	deviceId := -1 //default audio device
+	if offscreen {
+		deviceId = 0 //If we're rendering, we don't want BASS to be tied to specific device, especially in headless system
+	}
+
+	if C.BASS_Init(C.int(deviceId), C.DWORD(44100), C.DWORD(0), nil, nil) != 0 {
 		log.Println("BASS Initialized!")
-		log.Println("BASS Version:", parseVersion(int(C.BASS_GetVersion())))
-		log.Println("BASS FX Version:", parseVersion(int(C.BASS_FX_GetVersion())))
+		log.Println("BASS Version:       ", parseVersion(int(C.BASS_GetVersion())))
+		log.Println("BASS FX Version:    ", parseVersion(int(C.BASS_FX_GetVersion())))
+
+		// We're not interested in BASSMix or BASSEnc in onscreen mode, show audio device instead
+		if !offscreen {
+			log.Println("BASS Audio Device:  ", getDeviceName())
+			log.Println("BASS Audio Latency: ", fmt.Sprintf("%dms", getLatency()))
+		} else {
+			log.Println("BASS Mix Version:   ", parseVersion(int(C.BASS_Mixer_GetVersion())))
+			log.Println("BASS Encode Version:", parseVersion(int(C.BASS_Encode_GetVersion())))
+		}
 	} else {
-		panic(fmt.Sprintf("Failed to run BASS, error: %d", int(C.BASS_ErrorGetCode())))
+		err := GetError()
+		panic(fmt.Sprintf("Failed to run BASS, error id: %d, message: %s", err, err.Message()))
 	}
 }
 
@@ -61,4 +80,20 @@ func parseVersion(version int) string {
 	revision2 := version & 0xFF
 
 	return fmt.Sprintf("%d.%d.%d.%d", main, revision0, revision1, revision2)
+}
+
+func getDeviceName() string {
+	var info C.BASS_DEVICEINFO
+
+	C.BASS_GetDeviceInfo(C.BASS_GetDevice(), &info)
+
+	return C.GoString(info.name)
+}
+
+func getLatency() int {
+	var info C.BASS_INFO
+
+	C.BASS_GetInfo(&info)
+
+	return int(info.latency)
 }

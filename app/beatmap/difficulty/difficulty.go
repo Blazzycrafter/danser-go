@@ -3,12 +3,12 @@ package difficulty
 import "math"
 
 const (
-	HitFadeIn     = 400
-	HitFadeOut    = 240
-	HittableRange = 400
-	ResultFadeIn  = 120
-	ResultFadeOut = 600
-	PostEmpt      = 500
+	HitFadeIn     = 400.0
+	HitFadeOut    = 240.0
+	HittableRange = 400.0
+	ResultFadeIn  = 120.0
+	ResultFadeOut = 600.0
+	PostEmpt      = 500.0
 )
 
 type Difficulty struct {
@@ -21,6 +21,11 @@ type Difficulty struct {
 	Hit300              int64
 	HPMod               float64
 	SpinnerRatio        float64
+	Speed               float64
+
+	ARReal      float64
+	ODReal      float64
+	CustomSpeed float64
 }
 
 func NewDifficulty(hpDrain, cs, od, ar float64) *Difficulty {
@@ -29,6 +34,7 @@ func NewDifficulty(hpDrain, cs, od, ar float64) *Difficulty {
 	diff.cs = cs
 	diff.od = od
 	diff.ar = ar
+	diff.CustomSpeed = 1
 	diff.calculate()
 	return diff
 }
@@ -52,12 +58,16 @@ func (diff *Difficulty) calculate() {
 
 	diff.HPMod = hpDrain
 	diff.CircleRadius = DifficultyRate(cs, 54.4, 32, 9.6) * 1.00041 //some weird allowance osu has
-	diff.Preempt = DifficultyRate(ar, 1800, 1200, 450)
+	diff.Preempt = math.Floor(DifficultyRate(ar, 1800, 1200, 450))
 	diff.FadeIn = DifficultyRate(ar, 1200, 800, 300)
 	diff.Hit50 = int64(DifficultyRate(od, 200, 150, 100))
 	diff.Hit100 = int64(DifficultyRate(od, 140, 100, 60))
 	diff.Hit300 = int64(DifficultyRate(od, 80, 50, 20))
 	diff.SpinnerRatio = DifficultyRate(od, 3, 5, 7.5)
+	diff.Speed = 1.0 / diff.GetModifiedTime(1)
+
+	diff.ARReal = DiffFromRate(diff.GetModifiedTime(diff.Preempt), 1800, 1200, 450)
+	diff.ODReal = DiffFromRate(diff.GetModifiedTime(float64(diff.Hit300)), 80, 50, 20)
 }
 
 func (diff *Difficulty) SetMods(mods Modifier) {
@@ -71,11 +81,11 @@ func (diff *Difficulty) CheckModActive(mods Modifier) bool {
 
 func (diff *Difficulty) GetModifiedTime(time float64) float64 {
 	if diff.Mods&DoubleTime > 0 {
-		return time / 1.5
+		return time / (1.5 * diff.CustomSpeed)
 	} else if diff.Mods&HalfTime > 0 {
-		return time / 0.75
+		return time / (0.75 * diff.CustomSpeed)
 	} else {
-		return time
+		return time / diff.CustomSpeed
 	}
 }
 
@@ -115,7 +125,14 @@ func (diff *Difficulty) SetAR(ar float64) {
 	diff.calculate()
 }
 
+func (diff *Difficulty) SetCustomSpeed(speed float64) {
+	diff.CustomSpeed = speed
+	diff.calculate()
+}
+
 func DifficultyRate(diff, min, mid, max float64) float64 {
+	diff = float64(float32(diff))
+
 	if diff > 5 {
 		return mid + (max-mid)*(diff-5)/5
 	}
@@ -123,4 +140,17 @@ func DifficultyRate(diff, min, mid, max float64) float64 {
 		return mid - (mid-min)*(5-diff)/5
 	}
 	return mid
+}
+
+func DiffFromRate(rate, min, mid, max float64) float64 {
+	rate = float64(float32(rate))
+
+	minStep := (min - mid) / 5
+	maxStep := (mid - max) / 5
+
+	if rate > mid {
+		return -(rate - min) / minStep
+	}
+
+	return 5.0 - (rate-mid)/maxStep
 }

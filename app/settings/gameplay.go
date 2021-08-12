@@ -4,12 +4,26 @@ var Gameplay = initGameplay()
 
 func initGameplay() *gameplay {
 	return &gameplay{
-		HitErrorMeter: &hudElement{
-			Show:    true,
-			Scale:   1.0,
-			Opacity: 1.0,
+		HitErrorMeter: &hitError{
+			hudElement: &hudElement{
+				Show:    true,
+				Scale:   1.0,
+				Opacity: 1.0,
+			},
+			ShowUnstableRate:     true,
+			UnstableRateDecimals: 0,
+			UnstableRateScale:    1.0,
 		},
-		Score: &hudElement{
+		Score: &score{
+			hudElement: &hudElement{
+				Show:    true,
+				Scale:   1.0,
+				Opacity: 1.0,
+			},
+			ProgressBar:     "Pie",
+			ShowGradeAlways: false,
+		},
+		HpBar: &hudElement{
 			Show:    true,
 			Scale:   1.0,
 			Opacity: 1.0,
@@ -19,12 +33,42 @@ func initGameplay() *gameplay {
 			Scale:   1.0,
 			Opacity: 1.0,
 		},
+		PPCounter: &ppCounter{
+			hudElement: &hudElement{
+				Show:    true,
+				Scale:   1.0,
+				Opacity: 1.0,
+			},
+			XPosition:     5,
+			YPosition:     150,
+			Decimals:      0,
+			Align:         "CentreLeft",
+			ShowInResults: true,
+		},
 		KeyOverlay: &hudElement{
 			Show:    true,
 			Scale:   1.0,
 			Opacity: 1.0,
 		},
-		ProgressBar: "Pie",
+		ScoreBoard: &scoreBoard{
+			hudElement: &hudElement{
+				Show:    true,
+				Scale:   1.0,
+				Opacity: 1.0,
+			},
+			HideOthers:  false,
+			ShowAvatars: false,
+			YOffset:     0,
+		},
+		Mods: &mods{
+			hudElement: &hudElement{
+				Show:    true,
+				Scale:   1.0,
+				Opacity: 1.0,
+			},
+			HideInReplays: false,
+			FoldInReplays: false,
+		},
 		Boundaries: &boundaries{
 			Enabled:         true,
 			BorderThickness: 1,
@@ -42,18 +86,29 @@ func initGameplay() *gameplay {
 			},
 			BackgroundOpacity: 0.5,
 		},
+		ShowResultsScreen: true,
+		ResultsScreenTime: 5,
+		ShowWarningArrows: true,
+		FlashlightDim:     1,
+		PlayUsername:      "Guest",
 	}
 }
 
 type gameplay struct {
-	HitErrorMeter *hudElement
-	Score         *hudElement
-	ComboCounter  *hudElement
-	KeyOverlay    *hudElement
-
-	ProgressBar string
-
-	Boundaries *boundaries
+	HitErrorMeter     *hitError
+	Score             *score
+	HpBar             *hudElement
+	ComboCounter      *hudElement
+	PPCounter         *ppCounter
+	KeyOverlay        *hudElement
+	ScoreBoard        *scoreBoard
+	Mods              *mods
+	Boundaries        *boundaries
+	ShowResultsScreen bool
+	ResultsScreenTime float64
+	ShowWarningArrows bool
+	FlashlightDim     float64
+	PlayUsername      string
 }
 
 type boundaries struct {
@@ -73,4 +128,39 @@ type hudElement struct {
 	Show    bool
 	Scale   float64
 	Opacity float64
+}
+
+type hitError struct {
+	*hudElement
+	ShowUnstableRate     bool
+	UnstableRateDecimals int
+	UnstableRateScale    float64
+}
+
+type score struct {
+	*hudElement
+	ProgressBar     string
+	ShowGradeAlways bool
+}
+
+type ppCounter struct {
+	*hudElement
+	XPosition     float64
+	YPosition     float64
+	Decimals      int
+	Align         string
+	ShowInResults bool
+}
+
+type scoreBoard struct {
+	*hudElement
+	HideOthers  bool
+	ShowAvatars bool
+	YOffset     float64
+}
+
+type mods struct {
+	*hudElement
+	HideInReplays bool
+	FoldInReplays bool
 }

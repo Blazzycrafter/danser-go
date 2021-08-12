@@ -14,7 +14,7 @@ import (
 type Controller interface {
 	SetBeatMap(beatMap *beatmap.BeatMap)
 	InitCursors()
-	Update(time int64, delta float64)
+	Update(time float64, delta float64)
 	GetCursors() []*graphics.Cursor
 }
 
@@ -36,6 +36,7 @@ func (controller *GenericController) InitCursors() {
 	controller.cursors = make([]*graphics.Cursor, settings.TAG)
 	controller.schedulers = make([]schedulers.Scheduler, settings.TAG)
 
+	// Mover initialization
 	for i := range controller.cursors {
 		controller.cursors[i] = graphics.NewCursor()
 
@@ -57,6 +58,8 @@ func (controller *GenericController) InitCursors() {
 			scheduler = schedulers.NewGenericScheduler(movers.NewLinearMover)
 		case "axis":
 			scheduler = schedulers.NewGenericScheduler(movers.NewAxisMover)
+		case "exgon":
+			scheduler = schedulers.NewGenericScheduler(movers.NewExGonMover)
 		case "aggressive":
 			scheduler = schedulers.NewGenericScheduler(movers.NewAggressiveMover)
 		case "momentum":
@@ -69,35 +72,41 @@ func (controller *GenericController) InitCursors() {
 	}
 
 	type Queue struct {
-		objs []objects.BaseObject
+		objs []objects.IHitObject
 	}
 
 	objs := make([]Queue, settings.TAG)
 
 	queue := controller.bMap.GetObjectsCopy()
 
+	// Convert retarded (0 length / 0ms) sliders to pseudo-circles
+	for i := 0; i < len(queue); i++ {
+		if s, ok := queue[i].(*objects.Slider); ok && s.IsRetarded() {
+			queue = schedulers.PreprocessQueue(i, queue, true)
+		}
+	}
+
+	// Convert sliders to pseudo-circles for tag cursors
 	if !settings.Dance.Battle && settings.Dance.TAGSliderDance && settings.TAG > 1 {
 		for i := 0; i < len(queue); i++ {
 			queue = schedulers.PreprocessQueue(i, queue, true)
 		}
 	}
 
-	if settings.Dance.SliderDance2B {
-		for i := 0; i < len(queue); i++ {
-			if s, ok := queue[i].(*objects.Slider); ok {
-				sd := s.GetBasicData()
-
-				for j := i + 1; j < len(queue); j++ {
-					od := queue[j].GetBasicData()
-					if (od.StartTime > sd.StartTime && od.StartTime < sd.EndTime) || (od.EndTime > sd.StartTime && od.EndTime < sd.EndTime) {
-						queue = schedulers.PreprocessQueue(i, queue, true)
-						break
-					}
+	// Resolving 2B conflicts
+	for i := 0; i < len(queue); i++ {
+		if s, ok := queue[i].(*objects.Slider); ok {
+			for j := i + 1; j < len(queue); j++ {
+				o := queue[j]
+				if (o.GetStartTime() >= s.GetStartTime() && o.GetStartTime() <= s.GetEndTime()) || (o.GetEndTime() >= s.GetStartTime() && o.GetEndTime() <= s.GetEndTime()) {
+					queue = schedulers.PreprocessQueue(i, queue, true)
+					break
 				}
 			}
 		}
 	}
 
+	// If DoSpinnersTogether is true with tag mode, allow all tag cursors to spin the same spinner with different movers
 	for j, o := range queue {
 		if _, ok := o.(*objects.Spinner); (ok && settings.Dance.DoSpinnersTogether) || settings.Dance.Battle {
 			for i := range objs {
@@ -109,17 +118,18 @@ func (controller *GenericController) InitCursors() {
 		}
 	}
 
+	//Initialize spinner movers
 	for i := range controller.cursors {
 		spinMover := "circle"
 		if len(settings.Dance.Spinners) > 0 {
 			spinMover = settings.Dance.Spinners[i%len(settings.Dance.Spinners)]
 		}
 
-		controller.schedulers[i].Init(objs[i].objs, controller.cursors[i], spinners.GetMoverByName(spinMover))
+		controller.schedulers[i].Init(objs[i].objs, controller.bMap.Diff.Mods, controller.cursors[i], spinners.GetMoverCtorByName(spinMover), true)
 	}
 }
 
-func (controller *GenericController) Update(time int64, delta float64) {
+func (controller *GenericController) Update(time float64, delta float64) {
 	for i := range controller.cursors {
 		controller.schedulers[i].Update(time)
 		controller.cursors[i].Update(delta)

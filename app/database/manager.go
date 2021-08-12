@@ -1,157 +1,188 @@
 package database
 
 import (
+	"crypto/md5"
 	"database/sql"
-	oppai "github.com/flesnuk/oppai5"
+	"encoding/hex"
+	"fmt"
 	"github.com/karrick/godirwalk"
+	_ "github.com/mattn/go-sqlite3"
+	"github.com/wieku/danser-go/app/beatmap"
 	"github.com/wieku/danser-go/app/settings"
 	"github.com/wieku/danser-go/app/utils"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
-
-	"crypto/md5"
-	"encoding/hex"
-	_ "github.com/mattn/go-sqlite3"
-	"github.com/wieku/danser-go/app/beatmap"
-	"io"
 	"strconv"
+	"strings"
 	"time"
 )
 
 var dbFile *sql.DB
 
-const databaseVersion = 20201118
+const databaseVersion = 20210423
 
 var currentPreVersion = databaseVersion
+var currentSchemaPreVersion = databaseVersion
 
-type toRemove struct {
+type mapLocation struct {
 	dir  string
 	file string
 }
 
-func Init() {
+var migrations []Migration
+
+var songsDir string
+
+func Init() error {
+	log.Println("DatabaseManager: Initializing database...")
+
 	var err error
+
+	songsDir, err = filepath.Abs(settings.General.OsuSongsDir)
+	if err != nil {
+		return fmt.Errorf("invalid song path given: %s", settings.General.OsuSongsDir)
+	}
+
+	_, err = os.Open(songsDir)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%s does not exist", songsDir)
+	}
+
+	migrations = []Migration{
+		&M20181111{},
+		&M20201027{},
+		&M20201112{},
+		&M20201117{},
+		&M20201118{},
+		&M20210104{},
+		&M20210326{},
+		&M20210423{},
+	}
+
 	dbFile, err = sql.Open("sqlite3", "danser.db")
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	_, err = dbFile.Exec(`
-		CREATE TABLE IF NOT EXISTS beatmaps (dir TEXT, file TEXT, lastModified INTEGER, title TEXT, titleUnicode TEXT, artist TEXT, artistUnicode TEXT, creator TEXT, version TEXT, source TEXT, tags TEXT, cs REAL, ar REAL, sliderMultiplier REAL, sliderTickRate REAL, audioFile TEXT, previewTime INTEGER, sampleSet INTEGER, stackLeniency REAL, mode INTEGER, bg TEXT, md5 TEXT, dateAdded INTEGER, playCount INTEGER, lastPlayed INTEGER, hpdrain REAL, od REAL, stars REAL DEFAULT -1, bpmMin REAL, bpmMax REAL, circles INTEGER, sliders INTEGER, spinners INTEGER, endTime INTEGER);
+		CREATE TABLE IF NOT EXISTS beatmaps (dir TEXT, file TEXT, lastModified INTEGER, title TEXT, titleUnicode TEXT, artist TEXT, artistUnicode TEXT, creator TEXT, version TEXT, source TEXT, tags TEXT, cs REAL, ar REAL, sliderMultiplier REAL, sliderTickRate REAL, audioFile TEXT, previewTime INTEGER, sampleSet INTEGER, stackLeniency REAL, mode INTEGER, bg TEXT, md5 TEXT, dateAdded INTEGER, playCount INTEGER, lastPlayed INTEGER, hpdrain REAL, od REAL, stars REAL DEFAULT -1, bpmMin REAL, bpmMax REAL, circles INTEGER, sliders INTEGER, spinners INTEGER, endTime INTEGER, setID INTEGER, mapID INTEGER);
 		CREATE INDEX IF NOT EXISTS idx ON beatmaps (dir, file);
 		CREATE TABLE IF NOT EXISTS info (key TEXT NOT NULL UNIQUE, value TEXT);
 	`)
 
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	res, _ := dbFile.Query("SELECT key, value FROM info")
+	schemaVersionExists := false
+
+	res, err := dbFile.Query("SELECT key, value FROM info")
+	if err != nil {
+		return err
+	}
 
 	for res.Next() {
 		var key, value string
 
-		res.Scan(&key, &value)
+		err = res.Scan(&key, &value)
+		if err != nil {
+			return err
+		}
+
 		if key == "version" {
 			currentPreVersion, _ = strconv.Atoi(value)
 		}
-	}
 
-	log.Println("Database version: ", currentPreVersion)
-
-	if currentPreVersion == databaseVersion {
-		return
-	}
-
-	log.Println("Database is too old! Updating...")
-
-	if currentPreVersion < 20181111 {
-		_, err = dbFile.Exec(`ALTER TABLE beatmaps ADD COLUMN hpdrain REAL;
-							 ALTER TABLE beatmaps ADD COLUMN od REAL;`)
-
-		if err != nil {
-			panic(err)
+		if key == "schema_version" {
+			schemaVersionExists = true
+			currentSchemaPreVersion, _ = strconv.Atoi(value)
 		}
 	}
 
-	if currentPreVersion < 20201027 {
-		_, err = dbFile.Exec(`
-			BEGIN TRANSACTION;
-			CREATE TEMPORARY TABLE beatmaps_backup(dir TEXT, file TEXT, lastModified INTEGER, title TEXT, titleUnicode TEXT, artist TEXT, artistUnicode TEXT, creator TEXT, version TEXT, source TEXT, tags TEXT, cs REAL, ar REAL, sliderMultiplier REAL, sliderTickRate REAL, audioFile TEXT, previewTime INTEGER, sampleSet INTEGER, stackLeniency REAL, mode INTEGER, bg TEXT, md5 TEXT, dateAdded INTEGER, playCount INTEGER, lastPlayed INTEGER, hpdrain REAL, od REAL);
-			INSERT INTO beatmaps_backup SELECT dir, file, lastModified, title, titleUnicode, artist, artistUnicode, creator, version, source, tags, cs, ar, sliderMultiplier, sliderTickRate, audioFile, previewTime, sampleSet, stackLeniency, mode, bg, md5, dateAdded, playCount, lastPlayed, hpdrain, od FROM beatmaps;
-			DROP TABLE beatmaps;
-			CREATE TABLE beatmaps(dir TEXT, file TEXT, lastModified INTEGER, title TEXT, titleUnicode TEXT, artist TEXT, artistUnicode TEXT, creator TEXT, version TEXT, source TEXT, tags TEXT, cs REAL, ar REAL, sliderMultiplier REAL, sliderTickRate REAL, audioFile TEXT, previewTime INTEGER, sampleSet INTEGER, stackLeniency REAL, mode INTEGER, bg TEXT, md5 TEXT, dateAdded INTEGER, playCount INTEGER, lastPlayed INTEGER, hpdrain REAL, od REAL);
-			INSERT INTO beatmaps SELECT * FROM beatmaps_backup;
-			DROP TABLE beatmaps_backup;
-			CREATE INDEX IF NOT EXISTS idx ON beatmaps (dir, file);
-			COMMIT;
-			vacuum;
-		`)
-
-		if err != nil {
-			panic(err)
-		}
+	if !schemaVersionExists {
+		currentSchemaPreVersion = currentPreVersion
 	}
 
-	if currentPreVersion < 20201117 {
-		_, err = dbFile.Exec(`ALTER TABLE beatmaps ADD COLUMN stars REAL DEFAULT -1;`)
+	log.Println("DatabaseManager: Database schema version:", currentSchemaPreVersion)
+	log.Println("DatabaseManager: Database data version:", currentPreVersion)
+
+	if currentSchemaPreVersion != databaseVersion {
+		log.Println("DatabaseManager: Database schema is too old! Updating...")
+
+		statement := ""
+
+		for _, m := range migrations {
+			if currentPreVersion < m.Date() {
+				statement += m.GetMigrationStmts()
+			}
+		}
+
+		_, err = dbFile.Exec(statement)
 		if err != nil {
 			panic(err)
 		}
+
+		log.Println("DatabaseManager: Schema has been updated!")
 	}
 
-	if currentPreVersion < 20201118 {
-		_, err = dbFile.Exec(`
-			ALTER TABLE beatmaps ADD COLUMN bpmMin REAL DEFAULT 0;
- 			ALTER TABLE beatmaps ADD COLUMN bpmMax REAL DEFAULT 0;
-  			ALTER TABLE beatmaps ADD COLUMN circles INTEGER DEFAULT 0;
-   			ALTER TABLE beatmaps ADD COLUMN sliders INTEGER DEFAULT 0;
-    		ALTER TABLE beatmaps ADD COLUMN spinners INTEGER DEFAULT 0;
-     		ALTER TABLE beatmaps ADD COLUMN endTime INTEGER DEFAULT 0;
-     	`)
+	_, err = dbFile.Exec("REPLACE INTO info (key, value) VALUES ('schema_version', ?)", strconv.FormatInt(databaseVersion, 10))
+	if err != nil {
+		return err
+	}
 
-		if err != nil {
-			panic(err)
-		}
+	if currentPreVersion != databaseVersion {
+		migrateBeatmaps()
 	}
 
 	_, err = dbFile.Exec("REPLACE INTO info (key, value) VALUES ('version', ?)", strconv.FormatInt(databaseVersion, 10))
 	if err != nil {
-		log.Println(err)
+		return err
 	}
+
+	return nil
 }
 
-func LoadBeatmaps() []*beatmap.BeatMap {
-	log.Println("Checking database...")
-
-	searchDir, err := filepath.Abs(settings.General.OsuSongsDir)
-	if err != nil {
-		log.Println("Invalid song path given:", settings.General.OsuSongsDir)
-		return nil
+func LoadBeatmaps(skipDatabaseCheck bool) []*beatmap.BeatMap {
+	if settings.General.UnpackOszFiles {
+		unpackMaps()
 	}
 
-	_, err = os.Open(searchDir)
-	if os.IsNotExist(err) {
-		log.Println(searchDir + " does not exist!")
-		return nil
+	if !skipDatabaseCheck {
+		importMaps()
 	}
 
-	mod := getLastModified()
+	log.Println("DatabaseManager: Loading beatmaps from database...")
 
-	newBeatmaps := make([]*beatmap.BeatMap, 0)
-	cachedBeatmaps := make([]*beatmap.BeatMap, 0)
+	allMaps := loadBeatmapsFromDatabase()
 
-	_ = godirwalk.Walk(searchDir, &godirwalk.Options{
+	stdMaps := make([]*beatmap.BeatMap, 0, len(allMaps) / 2)
+
+	for _, b := range allMaps {
+		if b.Mode == 0 {
+			stdMaps = append(stdMaps, b)
+		}
+	}
+
+	log.Println("DatabaseManager: Loaded", len(stdMaps), "total.")
+
+	return stdMaps
+}
+
+func unpackMaps() {
+	_ = godirwalk.Walk(songsDir, &godirwalk.Options{
 		Callback: func(osPathname string, de *godirwalk.Dirent) error {
-			if de.IsDir() && osPathname != searchDir {
+			if de.IsDir() && osPathname != songsDir {
 				return godirwalk.SkipThis
 			}
 
 			if strings.HasSuffix(de.Name(), ".osz") {
-				log.Println("Unpacking", osPathname, "to", filepath.Dir(osPathname)+"/"+strings.TrimSuffix(de.Name(), ".osz"))
-				utils.Unzip(osPathname, filepath.Dir(osPathname)+"/"+strings.TrimSuffix(de.Name(), ".osz"))
+				destination := filepath.Join(filepath.Dir(osPathname), strings.TrimSuffix(de.Name(), ".osz"))
+
+				log.Println("DatabaseManager: Unpacking", osPathname, "->", destination)
+
+				utils.Unzip(osPathname, destination)
 				os.Remove(osPathname)
 			}
 
@@ -159,54 +190,25 @@ func LoadBeatmaps() []*beatmap.BeatMap {
 		},
 		Unsorted: true,
 	})
+}
 
-	err = godirwalk.Walk(searchDir, &godirwalk.Options{
+func importMaps() {
+	mapsInDB := getLastModified()
+	candidates := make([]mapLocation, 0)
+
+	log.Println(fmt.Sprintf("DatabaseManager: Scanning \"%s\" for .osu files...", songsDir))
+
+	err := godirwalk.Walk(songsDir, &godirwalk.Options{
 		Callback: func(osPathname string, de *godirwalk.Dirent) error {
-			if de.IsDir() && osPathname != searchDir && filepath.Dir(osPathname) != searchDir {
+			if de.IsDir() && osPathname != songsDir && filepath.Dir(osPathname) != songsDir {
 				return godirwalk.SkipThis
 			}
 
 			if strings.HasSuffix(de.Name(), ".osu") {
-				cachedTime := mod[filepath.Base(filepath.Dir(osPathname))+"/"+de.Name()]
-
-				stat, err := os.Stat(osPathname)
-				if err != nil {
-					log.Println("Failed to read file stats, skipping:", osPathname)
-					return nil
-				}
-
-				if cachedTime != stat.ModTime().UnixNano()/1000000 {
-					if cachedTime > 0 {
-						log.Println(cachedTime, stat.ModTime().UnixNano()/1000000, osPathname)
-						removeBeatmap(filepath.Base(filepath.Dir(osPathname)), de.Name())
-						log.Println("Found new beatmap version:", de.Name())
-					} else {
-						log.Println("New beatmap found:", de.Name())
-					}
-
-					file, err := os.Open(osPathname)
-
-					if err == nil {
-						defer file.Close()
-
-						if bMap := beatmap.ParseBeatMapFile(file); bMap != nil {
-							bMap.LastModified = stat.ModTime().UnixNano() / 1000000
-							bMap.TimeAdded = time.Now().UnixNano() / 1000000
-							log.Println("Importing:", bMap.File)
-
-							hash := md5.New()
-							if _, err := io.Copy(hash, file); err == nil {
-								bMap.MD5 = hex.EncodeToString(hash.Sum(nil))
-								newBeatmaps = append(newBeatmaps, bMap)
-							}
-						}
-					}
-				} else {
-					bMap := beatmap.NewBeatMap()
-					bMap.Dir = filepath.Base(filepath.Dir(osPathname))
-					bMap.File = de.Name()
-					cachedBeatmaps = append(cachedBeatmaps, bMap)
-				}
+				candidates = append(candidates, mapLocation{
+					dir:  filepath.Base(filepath.Dir(osPathname)),
+					file: de.Name(),
+				})
 			}
 
 			return nil
@@ -218,87 +220,109 @@ func LoadBeatmaps() []*beatmap.BeatMap {
 		panic(err)
 	}
 
-	log.Println("Imported", len(newBeatmaps), "new beatmaps.")
+	log.Println("DatabaseManager: Scan complete. Found", len(candidates), "files.")
+	log.Println("DatabaseManager: Comparing files with database...")
 
-	updateBeatmaps(newBeatmaps)
+	mapsToImport := make([]interface{}, 0)
 
-	log.Println("Found", len(cachedBeatmaps), "cached beatmaps. Loading...")
+	for _, candidate := range candidates {
+		partialPath := filepath.Join(candidate.dir, candidate.file)
+		mapPath := filepath.Join(songsDir, partialPath)
 
-	loadBeatmaps(cachedBeatmaps)
+		stat, err := os.Stat(mapPath)
+		if err != nil {
+			log.Println("DatabaseManager: Failed to read file stats, skipping:", partialPath)
+			log.Println("DatabaseManager: Error:", err)
 
-	allMaps := append(newBeatmaps, cachedBeatmaps...)
-
-	log.Println("Loaded", len(allMaps), "total.")
-
-	result := make([]*beatmap.BeatMap, 0)
-	stars := make([]interface{}, 0)
-
-	for _, b := range allMaps {
-		if b.Mode == 0 {
-			if b.Stars < 0 {
-				stars = append(stars, b)
+			// If file does exist we assume it's a permission error, don't remove it from database in that case
+			if !os.IsNotExist(err) {
+				delete(mapsInDB, candidate)
 			}
 
-			result = append(result, b)
+			continue
 		}
+
+		if lastModified, ok := mapsInDB[candidate]; ok {
+			if lastModified == stat.ModTime().UnixNano()/1000000 {
+				// Map is up to date, so remove it from mapsInDB because values left in that map are later removed from database.
+				delete(mapsInDB, candidate)
+
+				continue
+			}
+
+			log.Println("DatabaseManager: New beatmap version found:", candidate.file)
+		} else {
+			log.Println("DatabaseManager: New beatmap found:", candidate.file)
+		}
+
+		mapsToImport = append(mapsToImport, candidate)
 	}
 
-	if len(stars) > 0 {
-		log.Println("Updating star rating...")
+	log.Println("DatabaseManager: Compare complete.")
 
-		utils.Balance(4, stars, func(a interface{}) interface{} {
-			b := a.(*beatmap.BeatMap)
+	if len(mapsInDB) > 0 {
+		log.Println("DatabaseManager: Removing leftover maps from database...")
 
-			f, err := os.Open(filepath.Join(settings.General.OsuSongsDir, b.Dir, b.File))
-			if err == nil {
-				mp := oppai.Parse(f)
+		mapsToRemove := make([]mapLocation, 0, len(mapsInDB))
 
-				if len(mp.Objects) > 0 {
-					calc := &oppai.DiffCalc{Beatmap: *mp}
-					calc.Calc(0, oppai.DefaultSingletapThreshold)
-					b.Stars = calc.Total
-				} else {
-					b.Stars = 0
-				}
+		for k := range mapsInDB {
+			mapsToRemove = append(mapsToRemove, k)
+		}
+
+		removeBeatmaps(mapsToRemove)
+
+		log.Println("DatabaseManager: Removal complete.")
+	}
+
+	if len(mapsToImport) > 0 {
+		log.Println("DatabaseManager: Starting import of", len(mapsToImport), "maps...")
+
+		loaded := utils.Balance(4, mapsToImport, func(a interface{}) interface{} {
+			candidate := a.(mapLocation)
+
+			partialPath := filepath.Join(candidate.dir, candidate.file)
+			mapPath := filepath.Join(songsDir, partialPath)
+
+			file, err := os.Open(mapPath)
+			if err != nil {
+				log.Println(fmt.Sprintf("\"DatabaseManager: Failed to read \"%s\", skipping. Error: %s", partialPath, err))
+				return nil
 			}
 
-			return a
+			defer file.Close()
+
+			log.Println("DatabaseManager: Importing:", partialPath)
+
+			if bMap := beatmap.ParseBeatMapFile(file); bMap != nil {
+				stat, _ := file.Stat()
+				bMap.LastModified = stat.ModTime().UnixNano() / 1000000
+				bMap.TimeAdded = time.Now().UnixNano() / 1000000
+
+				hash := md5.New()
+				if _, err := io.Copy(hash, file); err == nil {
+					bMap.MD5 = hex.EncodeToString(hash.Sum(nil))
+				}
+
+				log.Println("DatabaseManager: Imported:", partialPath)
+				return bMap
+			} else {
+				log.Println("DatabaseManager: Failed to import:", partialPath)
+			}
+
+			return nil
 		})
 
-		tx, err := dbFile.Begin()
-		if err != nil {
-			panic(err)
+		newBeatmaps := make([]*beatmap.BeatMap, len(loaded))
+		for i, o := range loaded {
+			newBeatmaps[i] = o.(*beatmap.BeatMap)
 		}
 
-		st, err := tx.Prepare("UPDATE beatmaps SET stars = ? WHERE dir = ? AND file = ?")
-		if err != nil {
-			panic(err)
-		}
+		log.Println("DatabaseManager: Imported", len(newBeatmaps), "new/updated beatmaps. Inserting to database...")
 
-		for _, b := range stars {
-			bMap := b.(*beatmap.BeatMap)
-			_, err1 := st.Exec(
-				bMap.Stars,
-				bMap.Dir,
-				bMap.File)
+		insertBeatmaps(newBeatmaps)
 
-			if err1 != nil {
-				log.Println(err1)
-			}
-		}
-
-		if err = st.Close(); err != nil {
-			panic(err)
-		}
-
-		if err = tx.Commit(); err != nil {
-			panic(err)
-		}
-
-		log.Println("Calculations finished")
+		log.Println("DatabaseManager: Insert complete.")
 	}
-
-	return result
 }
 
 func UpdatePlayStats(beatmap *beatmap.BeatMap) {
@@ -308,194 +332,140 @@ func UpdatePlayStats(beatmap *beatmap.BeatMap) {
 	}
 }
 
-func removeBeatmap(dir, file string) {
-	dbFile.Exec("DELETE FROM beatmaps WHERE dir = ? AND file = ?", dir, file)
-}
-
-func loadBeatmaps(bMaps []*beatmap.BeatMap) {
-
-	beatmaps := make(map[string]int)
-	var removeList []toRemove
-
-	for i, bMap := range bMaps {
-		beatmaps[bMap.Dir+"/"+bMap.File] = i + 1
+func removeBeatmaps(toRemove []mapLocation) {
+	if len(toRemove) == 0 {
+		return
 	}
 
-	if currentPreVersion < 20201118 {
-		log.Println("Updating cached beatmaps")
+	tx, err := dbFile.Begin()
 
-		toUpdate := make([]*beatmap.BeatMap, 0)
+	if err == nil {
+		st, err := tx.Prepare("DELETE FROM beatmaps WHERE dir = ? AND file = ?")
 
-		for _, bMap := range bMaps {
-			err2 := beatmap.ParseBeatMap(bMap)
-			if err2 != nil {
-				log.Println("Corrupted cached beatmap found. Removing from database:", bMap.File)
-				removeList = append(removeList, toRemove{bMap.Dir, bMap.File})
-			} else {
+		if err == nil {
+			for _, bMap := range toRemove {
+				_, err1 := st.Exec(bMap.dir, bMap.file)
+
+				if err1 != nil {
+					log.Println(err1)
+				}
+			}
+		} else {
+			panic(err)
+		}
+
+		st.Close()
+		tx.Commit()
+	}
+
+	if err != nil {
+		log.Println(err)
+	}
+}
+
+func migrateBeatmaps() {
+	lastModified := getLastModified()
+
+	var removeList []mapLocation
+
+	if currentPreVersion < databaseVersion {
+		updateBeatmaps := false
+
+		for _, m := range migrations {
+			if currentPreVersion < m.Date() {
+				updateBeatmaps = updateBeatmaps || m.FieldsToMigrate() != nil
+			}
+		}
+
+		if updateBeatmaps {
+			log.Println("Updating cached beatmaps...")
+
+			log.Println("Loading cached beatmaps from disk...")
+
+			toUpdate := make([]*beatmap.BeatMap, 0)
+
+			for location := range lastModified {
+				file, err := os.Open(filepath.Join(songsDir, location.dir, location.file))
+				if err != nil {
+					log.Println("Failed to open file, removing from database:", location.file)
+					log.Println("Error:", err)
+
+					removeList = append(removeList, location)
+
+					continue
+				}
+
+				bMap := beatmap.ParseBeatMapFile(file)
+				if bMap == nil {
+					log.Println("Corrupted cached beatmap found. Removing from database:", location.file)
+
+					removeList = append(removeList, location)
+
+					continue
+				}
+
 				toUpdate = append(toUpdate, bMap)
 			}
-		}
 
-		tx, err := dbFile.Begin()
-		if err != nil {
-			panic(err)
-		}
+			log.Println("Cached beatmaps loaded! Performing migrations...")
 
-		if currentPreVersion < 20181111 {
-			st, err := tx.Prepare("UPDATE beatmaps SET hpdrain = ?, od = ? WHERE dir = ? AND file = ?")
+			tx, err := dbFile.Begin()
 			if err != nil {
 				panic(err)
 			}
 
-			for _, bMap := range toUpdate {
-				_, err1 := st.Exec(
-					bMap.Diff.GetHPDrain(),
-					bMap.Diff.GetOD(),
-					bMap.Dir,
-					bMap.File)
+			for _, m := range migrations {
+				if currentPreVersion < m.Date() {
+					log.Println("Performing", m.Date(), "migration...")
 
-				if err1 != nil {
-					log.Println(err1)
+					if m.FieldsToMigrate() == nil {
+						continue
+					}
+
+					fieldsArray := m.FieldsToMigrate()
+					for i := range fieldsArray {
+						fieldsArray[i] += " = ?"
+					}
+
+					st, err := tx.Prepare(fmt.Sprintf("UPDATE beatmaps SET %s WHERE dir = ? AND file = ?", strings.Join(fieldsArray, ", ")))
+					if err != nil {
+						panic(err)
+					}
+
+					for _, bMap := range toUpdate {
+						values := append(m.GetValues(bMap), bMap.Dir, bMap.File)
+
+						_, err = st.Exec(values...)
+
+						if err != nil {
+							panic(err)
+						}
+					}
+
+					if err = st.Close(); err != nil {
+						panic(err)
+					}
 				}
 			}
 
-			if err = st.Close(); err != nil {
-				panic(err)
-			}
-		}
+			log.Println("Committing migrations to database...")
 
-		if currentPreVersion < 20201112 {
-			st, err := tx.Prepare("UPDATE beatmaps SET previewTime = ? WHERE dir = ? AND file = ?")
+			err = tx.Commit()
 			if err != nil {
 				panic(err)
 			}
-
-			for _, bMap := range toUpdate {
-				_, err1 := st.Exec(
-					bMap.PreviewTime,
-					bMap.Dir,
-					bMap.File)
-
-				if err1 != nil {
-					log.Println(err1)
-				}
-			}
-
-			if err = st.Close(); err != nil {
-				panic(err)
-			}
-		}
-
-		if currentPreVersion < 20201118 {
-			st, err := tx.Prepare("UPDATE beatmaps SET bpmMin = ?, bpmMax = ?, circles = ?, sliders = ?, spinners = ?, endTime = ? WHERE dir = ? AND file = ?")
-			if err != nil {
-				panic(err)
-			}
-
-			for _, bMap := range toUpdate {
-				_, err1 := st.Exec(
-					bMap.MinBPM,
-					bMap.MaxBPM,
-					bMap.Circles,
-					bMap.Sliders,
-					bMap.Spinners,
-					bMap.Length,
-					bMap.Dir,
-					bMap.File)
-
-				if err1 != nil {
-					log.Println(err1)
-				}
-			}
-
-			if err = st.Close(); err != nil {
-				panic(err)
-			}
-		}
-
-		err = tx.Commit()
-		if err != nil {
-			panic(err)
-		}
-	} else {
-		res, _ := dbFile.Query("SELECT * FROM beatmaps")
-
-		for res.Next() {
-			beatmap := beatmap.NewBeatMap()
-
-			var cs float64
-			var ar float64
-			var hp float64
-			var od float64
-
-			res.Scan(
-				&beatmap.Dir,
-				&beatmap.File,
-				&beatmap.LastModified,
-				&beatmap.Name,
-				&beatmap.NameUnicode,
-				&beatmap.Artist,
-				&beatmap.ArtistUnicode,
-				&beatmap.Creator,
-				&beatmap.Difficulty,
-				&beatmap.Source,
-				&beatmap.Tags,
-				&cs,
-				&ar,
-				&beatmap.Timings.SliderMult,
-				&beatmap.Timings.TickRate,
-				&beatmap.Audio,
-				&beatmap.PreviewTime,
-				&beatmap.Timings.BaseSet,
-				&beatmap.StackLeniency,
-				&beatmap.Mode,
-				&beatmap.Bg,
-				&beatmap.MD5,
-				&beatmap.TimeAdded,
-				&beatmap.PlayCount,
-				&beatmap.LastPlayed,
-				&hp,
-				&od,
-				&beatmap.Stars,
-				&beatmap.MinBPM,
-				&beatmap.MaxBPM,
-				&beatmap.Circles,
-				&beatmap.Sliders,
-				&beatmap.Spinners,
-				&beatmap.Length,
-			)
-
-			beatmap.Diff.SetCS(cs)
-			beatmap.Diff.SetAR(ar)
-			beatmap.Diff.SetHPDrain(hp)
-			beatmap.Diff.SetOD(od)
-
-			if beatmap.Name+beatmap.Artist+beatmap.Creator == "" {
-				log.Println("Corrupted cached beatmap found. Removing from database:", beatmap.File)
-				removeList = append(removeList, toRemove{beatmap.Dir, beatmap.File})
-				continue
-			}
-
-			key := beatmap.Dir + "/" + beatmap.File
-
-			if beatmaps[key] > 0 {
-				bMaps[beatmaps[key]-1] = beatmap
-			}
-
 		}
 	}
 
-	for _, b := range removeList {
-		removeBeatmap(b.dir, b.file)
-	}
+	removeBeatmaps(removeList)
 }
 
-func updateBeatmaps(bMaps []*beatmap.BeatMap) {
+func insertBeatmaps(bMaps []*beatmap.BeatMap) {
 	tx, err := dbFile.Begin()
 
 	if err == nil {
 		var st *sql.Stmt
-		st, err = tx.Prepare("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+		st, err = tx.Prepare("INSERT INTO beatmaps VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 
 		if err == nil {
 			for _, bMap := range bMaps {
@@ -533,6 +503,8 @@ func updateBeatmaps(bMaps []*beatmap.BeatMap) {
 					bMap.Sliders,
 					bMap.Spinners,
 					bMap.Length,
+					bMap.SetID,
+					bMap.ID,
 				)
 
 				if err1 != nil {
@@ -552,19 +524,91 @@ func updateBeatmaps(bMaps []*beatmap.BeatMap) {
 	}
 }
 
-func getLastModified() map[string]int64 {
-	res, _ := dbFile.Query("SELECT dir, file, lastModified FROM beatmaps")
+func loadBeatmapsFromDatabase() []*beatmap.BeatMap {
+	beatmaps := make([]*beatmap.BeatMap, 0)
 
-	mod := make(map[string]int64)
+	res, _ := dbFile.Query("SELECT * FROM beatmaps")
 
 	for res.Next() {
-		var dir string
-		var file string
+		beatMap := beatmap.NewBeatMap()
+
+		var cs, ar, hp, od float64
+
+		res.Scan(
+			&beatMap.Dir,
+			&beatMap.File,
+			&beatMap.LastModified,
+			&beatMap.Name,
+			&beatMap.NameUnicode,
+			&beatMap.Artist,
+			&beatMap.ArtistUnicode,
+			&beatMap.Creator,
+			&beatMap.Difficulty,
+			&beatMap.Source,
+			&beatMap.Tags,
+			&cs,
+			&ar,
+			&beatMap.Timings.SliderMult,
+			&beatMap.Timings.TickRate,
+			&beatMap.Audio,
+			&beatMap.PreviewTime,
+			&beatMap.Timings.BaseSet,
+			&beatMap.StackLeniency,
+			&beatMap.Mode,
+			&beatMap.Bg,
+			&beatMap.MD5,
+			&beatMap.TimeAdded,
+			&beatMap.PlayCount,
+			&beatMap.LastPlayed,
+			&hp,
+			&od,
+			&beatMap.Stars,
+			&beatMap.MinBPM,
+			&beatMap.MaxBPM,
+			&beatMap.Circles,
+			&beatMap.Sliders,
+			&beatMap.Spinners,
+			&beatMap.Length,
+			&beatMap.SetID,
+			&beatMap.ID,
+		)
+
+		beatMap.Diff.SetCS(cs)
+		beatMap.Diff.SetAR(ar)
+		beatMap.Diff.SetHPDrain(hp)
+		beatMap.Diff.SetOD(od)
+
+		beatmaps = append(beatmaps, beatMap)
+	}
+
+	return beatmaps
+}
+
+func getLastModified() map[mapLocation]int64 {
+	res, _ := dbFile.Query("SELECT dir, file, lastModified FROM beatmaps")
+
+	mod := make(map[mapLocation]int64)
+
+	for res.Next() {
+		var dir, file string
 		var lastModified int64
 
 		res.Scan(&dir, &file, &lastModified)
-		mod[dir+"/"+file] = lastModified
+
+		mod[mapLocation{
+			dir:  dir,
+			file: file,
+		}] = lastModified
 	}
 
 	return mod
+}
+
+func Close() {
+	if dbFile != nil {
+		err := dbFile.Close()
+		if err != nil {
+			log.Println("Failed to close database:", err)
+		}
+	}
 }

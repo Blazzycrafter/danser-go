@@ -110,6 +110,10 @@ func (v Vector2f) AngleRV(v1 Vector2f) float32 {
 	return math32.Atan2(v.Y-v1.Y, v.X-v1.X)
 }
 
+func (v Vector2f) Lerp(v1 Vector2f, t float32) Vector2f {
+	return v1.Sub(v).Scl(t).Add(v)
+}
+
 func (v Vector2f) Rotate(rad float32) Vector2f {
 	cos := math32.Cos(rad)
 	sin := math32.Sin(rad)
@@ -146,4 +150,8 @@ func (v Vector2f) Copy() Vector2f {
 
 func (v Vector2f) Copy64() Vector2d {
 	return Vector2d{float64(v.X), float64(v.Y)}
+}
+
+func IsStraightLine32(a, b, c Vector2f) bool {
+	return (b.X - a.X) * (c.Y - a.Y) - (c.X - a.X) * (b.Y - a.Y) == 0
 }
