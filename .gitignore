@@ -1,0 +1,15 @@
+.idea/
+/screenshots/
+/replays/
+/videos/
+/settings/
+settings.json
+settings-*
+danser.db
+danser
+danser*.exe
+danser*.zip
+danser.log
+assets.dpak
+api.txt
+*.osr
